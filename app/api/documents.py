@@ -12,6 +12,7 @@ from app.models.document import Document
 from app.schemas.document import DocumentResponse, DocumentListResponse
 from pypdf import PdfReader
 from app.services.embeddings import process_document_embeddings
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks
 import io
 
 router = APIRouter()
@@ -29,6 +30,7 @@ async def read_file_content(file_path: str, file_type: str) -> str:
 
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -73,21 +75,35 @@ async def upload_document(
 
     # Simpan ke database
     document = Document(
-    title=file.filename,
-    file_path=file_path,
-    file_type=file_type,
-    content=text_content,
-    owner_id=current_user.id,
+        title=file.filename,
+        file_path=file_path,
+        file_type=file_type,
+        content=text_content,
+        owner_id=current_user.id,
     )
     db.add(document)
     await db.commit()
     await db.refresh(document)
 
-    # Generate embeddings kalau ada content
+    # Proses embedding di background
     if text_content:
-        await process_document_embeddings(document.id, text_content, db)
+        background_tasks.add_task(
+            process_embedding_background,
+            document.id,
+            text_content
+        )
 
     return document
+
+async def process_embedding_background(document_id: int, content: str):
+    """Background task untuk proses embedding"""
+    from app.core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        try:
+            await process_document_embeddings(document_id, content, db)
+        except Exception as e:
+            import logging
+            logging.error(f"Error processing embeddings for document {document_id}: {e}")
 
 @router.get("/", response_model=DocumentListResponse)
 async def get_documents(
