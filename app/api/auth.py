@@ -9,6 +9,8 @@ from app.core.database import get_db
 from app.core.security import create_access_token
 from app.models.user import User
 from app.core.deps import get_current_user
+from passlib.context import CryptContext
+from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse
 
 
 router = APIRouter()
@@ -137,3 +139,36 @@ async def get_me(current_user: User = Depends(get_current_user)):
         "username": current_user.username,
         "avatar_url": current_user.avatar_url
     }
+
+@router.post("/register", response_model=TokenResponse, status_code=201)
+async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    # Cek email sudah ada
+    result = await db.execute(select(User).where(User.email == data.email))
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email sudah terdaftar")
+
+    user = User(
+        email=data.email,
+        username=data.username,
+        hashed_password=pwd_context.hash(data.password),
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+
+    access_token = create_access_token(data={"sub": str(user.id), "email": user.email})
+    return {"access_token": access_token}
+
+@router.post("/login", response_model=TokenResponse)
+async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == data.email))
+    user = result.scalar_one_or_none()
+
+    if not user or not user.hashed_password:
+        raise HTTPException(status_code=401, detail="Email atau password salah")
+
+    if not pwd_context.verify(data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Email atau password salah")
+
+    access_token = create_access_token(data={"sub": str(user.id), "email": user.email})
+    return {"access_token": access_token}
